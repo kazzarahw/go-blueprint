@@ -4,12 +4,14 @@
 // Conventions demonstrated:
 //   - Functional core: every transition is a pure function of its inputs.
 //     No I/O, no clocks, no globals, no hidden dependencies.
-//   - Immutable by convention: Task values are copied, never mutated in
-//     place. A transition returns a new Task; the receiver is unchanged.
+//   - Immutable by convention: Task has no exported fields. Values are
+//     constructed with New and derived with the transition methods; a state
+//     transition returns a new Task and never mutates the receiver.
+//   - Invariants by construction: an unknown or inconsistent state cannot be
+//     built through the public API, so operations never need to validate it.
 //   - Explicit state transitions: applying an operation in a state that
 //     does not allow it returns a typed, matchable error.
-//   - Errors are explicit and inspectable: errors.Is and errors.As work.
-//   - The zero value is never silently valid: Task must be built with New.
+//   - Errors are explicit and inspectable: errors.Is and errors.AsType work.
 //
 // It is deliberately small. It is not a framework, a dependency, or a
 // recommendation to model your domain as state machines. It exists so that
@@ -24,7 +26,7 @@ import (
 // State is the lifecycle state of a task.
 type State string
 
-// The known states. Anything else is invalid and rejected by transitions.
+// The known states.
 const (
 	Pending   State = "pending"
 	Running   State = "running"
@@ -33,20 +35,11 @@ const (
 	Cancelled State = "cancelled"
 )
 
-// Valid reports whether s is a known state.
-func (s State) Valid() bool {
-	switch s {
-	case Pending, Running, Succeeded, Failed, Cancelled:
-		return true
-	}
-	return false
-}
-
 // Terminal reports whether s is a terminal state from which no transition
 // is allowed. Succeeded and Cancelled are terminal. Failed is not: a failed
 // task may be moved back to Pending with Reset to make another attempt.
-// Unknown states are treated as non-terminal so callers keep getting explicit
-// transition errors instead of a misleading "terminal".
+// Unknown states are treated as non-terminal so callers keep getting
+// explicit transition errors instead of a misleading "terminal".
 func (s State) Terminal() bool {
 	switch s {
 	case Succeeded, Cancelled:
@@ -62,8 +55,17 @@ func (s State) Terminal() bool {
 var ErrIllegalTransition = errors.New("illegal transition")
 
 // TransitionError describes a rejected transition. Match the sentinel with
-// errors.Is(err, ErrIllegalTransition) or extract details with
-// errors.As(err, &TransitionError{...}).
+// errors.Is(err, ErrIllegalTransition), which works for any wrapped form.
+// Extract the structured details with errors.AsType:
+//
+//	if te, ok := errors.AsType[*taskstate.TransitionError](err); ok {
+//		fmt.Println(te.Op, te.From)
+//	}
+//
+// errors.AsType replaced the older errors.As idiom; the equivalent As form
+// is var te *taskstate.TransitionError + errors.As(err, &te) — note the
+// target is a pointer to the pointer-holding variable, never
+// errors.As(err, &TransitionError{}).
 type TransitionError struct {
 	// Op is the attempted operation, e.g. "start".
 	Op string
@@ -81,51 +83,61 @@ func (e *TransitionError) Unwrap() error { return ErrIllegalTransition }
 
 // Task is an immutable snapshot of a tracked unit of work.
 //
-// Fields are exported for inspection only; treat them as read-only. Build
-// tasks with New and derive new tasks by calling the transition methods.
-// The zero value has an invalid state and is rejected by every operation.
+// The fields are unexported on purpose: the invariants (State is always one
+// of the known constants; Attempts never decreases) hold by construction
+// and cannot be broken by callers, callers in other packages, or copies
+// taken through reflection-free means. Construct tasks with New and derive
+// new tasks with the transition methods; read the values with ID, State and
+// Attempts. The zero value is distinct from anything New can build and is
+// rejected by every operation.
 type Task struct {
-	// ID identifies the task. It is carried through transitions unchanged.
-	ID string
-	// State is the current lifecycle state.
-	State State
-	// Attempts counts how many times the task has been started.
-	Attempts int
+	id       string
+	state    State
+	attempts int
 }
 
 // New returns a Pending Task with the given ID.
 func New(id string) Task {
-	return Task{ID: id, State: Pending}
+	return Task{id: id, state: Pending}
 }
+
+// ID returns the task's identifier.
+func (t Task) ID() string { return t.id }
+
+// State returns the current lifecycle state.
+func (t Task) State() State { return t.state }
+
+// Attempts returns how many times the task has been started.
+func (t Task) Attempts() int { return t.attempts }
 
 // Start moves a Pending task to Running and increments Attempts.
 func (t Task) Start() (Task, error) {
-	if t.State == Pending {
-		return Task{ID: t.ID, State: Running, Attempts: t.Attempts + 1}, nil
+	if t.state == Pending {
+		return Task{id: t.id, state: Running, attempts: t.attempts + 1}, nil
 	}
 	return Task{}, t.illegal("start")
 }
 
 // Succeed moves a Running task to Succeeded.
 func (t Task) Succeed() (Task, error) {
-	if t.State == Running {
-		return Task{ID: t.ID, State: Succeeded, Attempts: t.Attempts}, nil
+	if t.state == Running {
+		return Task{id: t.id, state: Succeeded, attempts: t.attempts}, nil
 	}
 	return Task{}, t.illegal("succeed")
 }
 
 // Fail moves a Running task to Failed.
 func (t Task) Fail() (Task, error) {
-	if t.State == Running {
-		return Task{ID: t.ID, State: Failed, Attempts: t.Attempts}, nil
+	if t.state == Running {
+		return Task{id: t.id, state: Failed, attempts: t.attempts}, nil
 	}
 	return Task{}, t.illegal("fail")
 }
 
 // Cancel moves a Pending or Running task to Cancelled.
 func (t Task) Cancel() (Task, error) {
-	if t.State == Pending || t.State == Running {
-		return Task{ID: t.ID, State: Cancelled, Attempts: t.Attempts}, nil
+	if t.state == Pending || t.state == Running {
+		return Task{id: t.id, state: Cancelled, attempts: t.attempts}, nil
 	}
 	return Task{}, t.illegal("cancel")
 }
@@ -133,14 +145,14 @@ func (t Task) Cancel() (Task, error) {
 // Reset moves a Failed task back to Pending so it can be started again.
 // Attempts is preserved; Start increments it.
 func (t Task) Reset() (Task, error) {
-	if t.State == Failed {
-		return Task{ID: t.ID, State: Pending, Attempts: t.Attempts}, nil
+	if t.state == Failed {
+		return Task{id: t.id, state: Pending, attempts: t.attempts}, nil
 	}
 	return Task{}, t.illegal("reset")
 }
 
 // illegal builds the error for any rejected operation, including attempts
-// made on a Task whose state is not one of the known constants.
+// made on a zero-value Task whose state is not one of the known constants.
 func (t Task) illegal(op string) error {
-	return &TransitionError{Op: op, From: t.State}
+	return &TransitionError{Op: op, From: t.state}
 }

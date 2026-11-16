@@ -24,3 +24,4 @@ agent or maintainer would otherwise have to reverse-engineer from git log.
 | [0001](0001-functional-core-imperative-shell.md) | Functional core / imperative shell as the default architecture | Accepted |
 | [0002](0002-tool-pinning-via-go-mod.md) | Pin development tools via `go.mod` tool directives | Accepted |
 | [0003](0003-nilaway-stance.md) | NilAway as advisory flow analysis, not a hard proof | Accepted |
+| [0004](0004-template-init-via-go-programs.md) | Template initialization via self-contained Go maintenance programs | Accepted |

@@ -33,3 +33,6 @@ jobs:
 
       - name: Vulnerability scan
         run: make vuln
+
+      - name: Smoke test (template initializes into a green project)
+        run: make smoke

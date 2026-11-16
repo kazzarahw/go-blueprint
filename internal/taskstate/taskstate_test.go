@@ -9,15 +9,21 @@ import (
 	"github.com/kazzarahw/go-blueprint/internal/taskstate"
 )
 
-// allowed encodes the transition table once, as data. The tests below
-// check every (operation, from-state) pair against it, so the spec is
-// stated exactly once and can never silently drift from the tests.
-var allowed = map[string]map[taskstate.State]taskstate.State{
-	"start":   {taskstate.Pending: taskstate.Running},
-	"succeed": {taskstate.Running: taskstate.Succeeded},
-	"fail":    {taskstate.Running: taskstate.Failed},
-	"cancel":  {taskstate.Pending: taskstate.Cancelled, taskstate.Running: taskstate.Cancelled},
-	"reset":   {taskstate.Failed: taskstate.Pending},
+// Test fixtures are built fresh by helper functions rather than stored in
+// package-level variables. Package-level mutable state — even in tests —
+// contradicts the convention enforced across this repository; see TESTING.md.
+// The transition table below *is* the spec: every operation × from-state
+// pair is checked against it, so it is stated exactly once per test run.
+
+// allowedTransitions encodes the transition table as data.
+func allowedTransitions() map[string]map[taskstate.State]taskstate.State {
+	return map[string]map[taskstate.State]taskstate.State{
+		"start":   {taskstate.Pending: taskstate.Running},
+		"succeed": {taskstate.Running: taskstate.Succeeded},
+		"fail":    {taskstate.Running: taskstate.Failed},
+		"cancel":  {taskstate.Pending: taskstate.Cancelled, taskstate.Running: taskstate.Cancelled},
+		"reset":   {taskstate.Failed: taskstate.Pending},
+	}
 }
 
 type operation struct {
@@ -25,47 +31,87 @@ type operation struct {
 	call func(taskstate.Task) (taskstate.Task, error)
 }
 
-var operations = []operation{
-	{"start", taskstate.Task.Start},
-	{"succeed", taskstate.Task.Succeed},
-	{"fail", taskstate.Task.Fail},
-	{"cancel", taskstate.Task.Cancel},
-	{"reset", taskstate.Task.Reset},
+func operations() []operation {
+	return []operation{
+		{"start", taskstate.Task.Start},
+		{"succeed", taskstate.Task.Succeed},
+		{"fail", taskstate.Task.Fail},
+		{"cancel", taskstate.Task.Cancel},
+		{"reset", taskstate.Task.Reset},
+	}
 }
 
-var fromStates = []taskstate.State{
-	taskstate.Pending,
-	taskstate.Running,
-	taskstate.Succeeded,
-	taskstate.Failed,
-	taskstate.Cancelled,
-	taskstate.State("bogus"), // invalid states must be rejected, never panic
+// knownStates lists the representable states. Invalid states are
+// unrepresentable by construction (Task has no exported fields); only raw
+// State values can be out-of-vocabulary, which Terminal must tolerate.
+func knownStates() []taskstate.State {
+	return []taskstate.State{
+		taskstate.Pending,
+		taskstate.Running,
+		taskstate.Succeeded,
+		taskstate.Failed,
+		taskstate.Cancelled,
+	}
+}
+
+func mustTask(t *testing.T, task taskstate.Task, err error) taskstate.Task {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("setup transition failed: %v", err)
+	}
+	return task
+}
+
+// taskInState builds a task in the given state via real transitions — the
+// only construction path the public API offers.
+func taskInState(t *testing.T, state taskstate.State) taskstate.Task {
+	t.Helper()
+	must := func(task taskstate.Task, err error) taskstate.Task {
+		return mustTask(t, task, err)
+	}
+	fresh := func() taskstate.Task { return taskstate.New("task-1") }
+	switch state {
+	case taskstate.Pending:
+		return fresh()
+	case taskstate.Running:
+		return must(fresh().Start())
+	case taskstate.Succeeded:
+		return must(must(fresh().Start()).Succeed())
+	case taskstate.Failed:
+		return must(must(fresh().Start()).Fail())
+	case taskstate.Cancelled:
+		return must(fresh().Cancel())
+	default:
+		t.Fatalf("no deterministic transition path to state %q", state)
+		return taskstate.Task{}
+	}
 }
 
 func TestTransitions_CompleteMatrix(t *testing.T) {
-	for _, op := range operations {
-		for _, from := range fromStates {
+	allowed := allowedTransitions()
+	for _, op := range operations() {
+		for _, from := range knownStates() {
 			t.Run(fmt.Sprintf("%s_from_%s", op.name, from), func(t *testing.T) {
-				checkTransition(t, op, from)
+				checkTransition(t, op, from, allowed)
 			})
 		}
 	}
 }
 
-func checkTransition(t *testing.T, op operation, from taskstate.State) {
+func checkTransition(t *testing.T, op operation, from taskstate.State, allowed map[string]map[taskstate.State]taskstate.State) {
 	t.Helper()
-	task := taskstate.Task{ID: "task-1", State: from, Attempts: 3}
+	task := taskInState(t, from)
 
 	next, err := op.call(task)
 	if want, ok := allowed[op.name][from]; ok {
 		if err != nil {
 			t.Fatalf("expected success, got error: %v", err)
 		}
-		if next.State != want {
-			t.Errorf("state = %q, want %q", next.State, want)
+		if next.State() != want {
+			t.Errorf("state = %q, want %q", next.State(), want)
 		}
-		if next.ID != task.ID {
-			t.Errorf("ID = %q, want %q", next.ID, task.ID)
+		if next.ID() != task.ID() {
+			t.Errorf("ID = %q, want %q", next.ID(), task.ID())
 		}
 		return
 	}
@@ -77,17 +123,28 @@ func checkTransition(t *testing.T, op operation, from taskstate.State) {
 	}
 }
 
+func TestZeroValue_TaskRejectedEveryOperation(t *testing.T) {
+	var zero taskstate.Task
+	for _, op := range operations() {
+		if next, err := op.call(zero); err == nil {
+			t.Errorf("%s on zero Task succeeded: %+v", op.name, next)
+		} else if !errors.Is(err, taskstate.ErrIllegalTransition) {
+			t.Errorf("%s on zero Task: err = %v, want errors.Is(err, ErrIllegalTransition)", op.name, err)
+		}
+	}
+}
+
 func TestTransitions_AreImmutable(t *testing.T) {
 	original := taskstate.New("task-1")
 	started, err := original.Start()
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if original.State != taskstate.Pending || original.Attempts != 0 {
+	if original.State() != taskstate.Pending || original.Attempts() != 0 {
 		t.Errorf("original mutated: %+v", original)
 	}
-	if started.Attempts != 1 {
-		t.Errorf("Attempts = %d, want 1", started.Attempts)
+	if started.Attempts() != 1 {
+		t.Errorf("Attempts = %d, want 1", started.Attempts())
 	}
 }
 
@@ -99,15 +156,15 @@ func TestStart_PreservesID_AndCountsAttemptsAcrossRetries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start (attempt %d): %v", want, err)
 		}
-		if task.Attempts != want {
-			t.Fatalf("Attempts = %d, want %d", task.Attempts, want)
+		if task.Attempts() != want {
+			t.Fatalf("Attempts = %d, want %d", task.Attempts(), want)
 		}
 		if want < 2 {
 			task = failThenReset(t, task)
 		}
 	}
-	if task.ID != "task-1" {
-		t.Errorf("ID = %q, want %q", task.ID, "task-1")
+	if task.ID() != "task-1" {
+		t.Errorf("ID = %q, want %q", task.ID(), "task-1")
 	}
 }
 
@@ -126,8 +183,8 @@ func failThenReset(t *testing.T, task taskstate.Task) taskstate.Task {
 
 func TestTerminalStates_RejectEveryOperation(t *testing.T) {
 	for _, terminal := range []taskstate.State{taskstate.Succeeded, taskstate.Cancelled} {
-		for _, op := range operations {
-			task := taskstate.Task{ID: "task-1", State: terminal, Attempts: 1}
+		for _, op := range operations() {
+			task := taskInState(t, terminal)
 			if next, err := op.call(task); err == nil {
 				t.Errorf("%s from terminal state %q succeeded: %+v", op.name, terminal, next)
 			}
@@ -135,17 +192,48 @@ func TestTerminalStates_RejectEveryOperation(t *testing.T) {
 	}
 }
 
+func TestState_UnknownValuesAreNonTerminal(t *testing.T) {
+	for _, s := range []taskstate.State{"", "bogus", "PENDING"} {
+		if s.Terminal() {
+			t.Errorf("State(%q).Terminal() = true, want false", s)
+		}
+	}
+}
+
 func TestTransitionError_IsMatchable(t *testing.T) {
 	_, err := taskstate.New("task-1").Succeed()
-	var te *taskstate.TransitionError
-	if !errors.As(err, &te) {
-		t.Fatalf("errors.As failed for %v", err)
+
+	te, ok := errors.AsType[*taskstate.TransitionError](err)
+	if !ok {
+		t.Fatalf("errors.AsType failed for %v", err)
 	}
 	if te.Op != "succeed" || te.From != taskstate.Pending {
 		t.Errorf("TransitionError = %+v, want Op=succeed From=pending", te)
 	}
 	if !errors.Is(err, taskstate.ErrIllegalTransition) {
 		t.Errorf("errors.Is(err, ErrIllegalTransition) = false for %v", err)
+	}
+
+	// The classic errors.As idiom remains valid with a pointer-to-pointer
+	// target.
+	var te2 *taskstate.TransitionError
+	if !errors.As(err, &te2) {
+		t.Fatalf("errors.As failed for %v", err)
+	}
+	if *te2 != *te {
+		t.Errorf("errors.As and errors.AsType disagree: %+v vs %+v", te2, te)
+	}
+}
+
+func TestTransitionError_MessageNamesOperationAndState(t *testing.T) {
+	_, err := taskstate.Task{}.Start()
+	var te *taskstate.TransitionError
+	if !errors.As(err, &te) {
+		t.Fatalf("errors.As failed for %v", err)
+	}
+	msg := te.Error()
+	if !strings.Contains(msg, "start") || !strings.Contains(msg, "\"\"") {
+		t.Errorf("Error() = %q, want it to mention operation and the zero state", msg)
 	}
 }
 
@@ -159,15 +247,16 @@ func Example() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(task.State)
+	fmt.Println(task.State())
 	// Output: succeeded
 }
 
 // FuzzTransitionSequence applies a byte script of operations to a task and
 // asserts the invariants the type is supposed to guarantee: no panics,
 // errors are always matchable as ErrIllegalTransition, terminal states
-// absorb all further operations, state stays valid, and attempts never go
-// backwards. The script alphabet is deliberately untrusted input.
+// absorb all further operations, state stays one of the known constants, and
+// attempts never go backwards. The script alphabet is deliberately
+// untrusted input.
 func FuzzTransitionSequence(f *testing.F) {
 	f.Add("aa")
 	f.Add("aabbccddeee")
@@ -184,7 +273,7 @@ func FuzzTransitionSequence(f *testing.F) {
 			checkInvariants(t, script[i], terminal, task, next, err)
 			if err == nil {
 				task = next
-				terminal = task.State.Terminal()
+				terminal = task.State().Terminal()
 			}
 		}
 	})
@@ -214,47 +303,29 @@ func checkInvariants(t *testing.T, op byte, terminal bool, prev, next taskstate.
 	t.Helper()
 	if err != nil {
 		if !errors.Is(err, taskstate.ErrIllegalTransition) {
-			t.Fatalf("op %q from %q: error %v is not ErrIllegalTransition", op, prev.State, err)
+			t.Fatalf("op %q from %q: error %v is not ErrIllegalTransition", op, prev.State(), err)
 		}
 		if next != (taskstate.Task{}) {
-			t.Fatalf("op %q from %q: non-zero task %+v on error", op, prev.State, next)
+			t.Fatalf("op %q from %q: non-zero task %+v on error", op, prev.State(), next)
 		}
 		return
 	}
 	if terminal {
-		t.Fatalf("op %q: transition out of terminal state %q succeeded", op, prev.State)
+		t.Fatalf("op %q: transition out of terminal state %q succeeded", op, prev.State())
 	}
-	if !next.State.Valid() {
-		t.Fatalf("op %q: state %q is not valid", op, next.State)
+	if !knownState(next.State()) {
+		t.Fatalf("op %q: state %q is not one of the known constants", op, next.State())
 	}
-	if next.Attempts < prev.Attempts {
-		t.Fatalf("op %q: attempts regressed %d -> %d", op, prev.Attempts, next.Attempts)
-	}
-}
-
-func TestState_UnknownAndZeroValueAreRejected(t *testing.T) {
-	for _, s := range []taskstate.State{"", "bogus", "PENDING"} {
-		if s.Valid() {
-			t.Errorf("State(%q).Valid() = true, want false", s)
-		}
-		if s.Terminal() {
-			t.Errorf("State(%q).Terminal() = true, want false", s)
-		}
-		// They must also be rejected by the transition engine.
-		if _, err := (taskstate.Task{ID: "x", State: s}).Start(); !errors.Is(err, taskstate.ErrIllegalTransition) {
-			t.Errorf("Start from State(%q): err = %v, want ErrIllegalTransition", s, err)
-		}
+	if next.Attempts() < prev.Attempts() {
+		t.Fatalf("op %q: attempts regressed %d -> %d", op, prev.Attempts(), next.Attempts())
 	}
 }
 
-func TestTransitionError_MessageNamesOperationAndState(t *testing.T) {
-	_, err := taskstate.Task{ID: "x", State: taskstate.Succeeded}.Start()
-	var te *taskstate.TransitionError
-	if !errors.As(err, &te) {
-		t.Fatalf("errors.As failed for %v", err)
+func knownState(s taskstate.State) bool {
+	for _, known := range knownStates() {
+		if s == known {
+			return true
+		}
 	}
-	msg := te.Error()
-	if !strings.Contains(msg, "start") || !strings.Contains(msg, "succeeded") {
-		t.Errorf("Error() = %q, want it to mention operation and state", msg)
-	}
+	return false
 }

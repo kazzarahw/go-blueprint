@@ -69,8 +69,13 @@ test: ## Run tests with the race detector
 	$(GO) test -race -count=1 ./...
 
 .PHONY: fuzz
-fuzz: ## Fuzz all fuzz targets (override with FUZZTIME=1m)
-	$(GO) test -run='^$$' -fuzz=. -fuzztime=$(FUZZTIME) ./...
+fuzz: ## Fuzz all fuzz targets (one package per run; override with FUZZTIME=1m)
+	@for pkg in $$($(GO) list ./...); do \
+		if $(GO) test -list '^Fuzz' $$pkg 2>/dev/null | grep -q '^Fuzz'; then \
+			echo "fuzzing $$pkg"; \
+			$(GO) test -run='^$$' -fuzz=. -fuzztime=$(FUZZTIME) $$pkg || exit 1; \
+		fi; \
+	done
 
 .PHONY: cover
 cover: ## Run tests with coverage and print per-function coverage
@@ -91,3 +96,9 @@ verify: tidy-check fmt-check vet staticcheck lint exhaustive nilaway test ## Run
 .PHONY: clean
 clean: ## Remove local artifacts (coverage.out)
 	rm -f coverage.out
+
+##@ Template
+
+.PHONY: smoke
+smoke: ## Copy the template into a temp dir, rename the module path, and run make verify there
+	$(GO) run ./scripts/smoke

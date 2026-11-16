@@ -78,7 +78,7 @@ Also available: `make cover` (per-function coverage), `make build`,
 
 ### What the lint config enforces (and what it deliberately does not)
 
-Enabled: `errcheck`, `errorlint`, `errname`, `govet` (with `shadow`),
+Enabled: `errcheck` (with `check-blank: true`, so `v, _ := f()` fails the build), `errorlint`, `errname`, `govet` (with `shadow`),
 `staticcheck`, `unused`, `ineffassign`, `wastedassign`, `unconvert`,
 `unparam`, `exhaustive`, `gosec`, `gocritic`, `gocognit` (max 15),
 `revive` (exported docs, error flow, naming, defer), `misspell`,
@@ -176,7 +176,10 @@ Rules of thumb:
 
 ```
 cmd/<name>/main.go   # one package main per binary; thin shells only
-internal/<pkg>/      # everything else; not importable outside this module
+internal/<pkg>/      # everything else; not importable by other modules
+internal/treewalk/   # shared directory walker for maintenance tooling (scripts/smoke)
+scripts/init         # module-path rewriter: go run ./scripts/init <new-path>
+scripts/smoke        # end-to-end check: copy → rename → make verify
 testdata/            # golden files and fuzz corpus seeds (per package)
 docs/decisions/      # ADRs
 ```
@@ -192,33 +195,61 @@ module; adapt for other forges.
 
 1. **Create the repository** from this template
    (GitHub → "Use this template", or `git clone` + remove `.git` + `git init`).
-2. **Rename the module**:
+2. **Rename the module** with the included initializer. It is a small Go
+   program (Go is guaranteed to be present), works identically on Linux,
+   macOS and Windows, and is self-contained — it can rewrite the module
+   even when it does not yet build:
    ```sh
-   go mod edit -module github.com/you/yourproject
+   go run ./scripts/init github.com/you/yourproject
    ```
-3. **Rewrite the module path everywhere** (docs, configs, editor settings):
+   What it does:
+   - refuses to run unless `go.mod` declares the template module path,
+     so it cannot half-run on the wrong directory;
+   - validates the new module path (host-like first element, valid
+     elements) before touching anything;
+   - replaces every occurrence of the template path — and the
+     regex-escaped form — in every text file (binary files and `.git` are
+     skipped; `scripts/init` itself is the single exception, by design);
+   - prints every file it changed and any remaining references, so you can
+     eyeball the result.
+
+   Manual alternatives (if you cannot run the script):
+   - Linux (GNU sed):
+     ```sh
+     grep -rl --exclude-dir=.git 'github\.com/kazzarahw/go-blueprint' . \
+       | xargs sed -i 's|github.com/kazzarahw/go-blueprint|github.com/you/yourproject|g'
+     ```
+   - macOS (BSD sed): same, with `sed -i ''`.
+   - Windows PowerShell:
+     ```powershell
+     Get-ChildItem -Recurse -File -Force |
+       Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+       ForEach-Object {
+         $c = [System.IO.File]::ReadAllText($_.FullName)
+         [System.IO.File]::WriteAllText($_.FullName,
+           $c.Replace('github.com/kazzarahw/go-blueprint', 'github.com/you/yourproject'))
+       }
+     ```
+   - Plus `go mod edit -module github.com/you/yourproject` either way.
+3. **Verify nothing was missed**:
    ```sh
-   grep -rl --exclude-dir=.git 'github\.com/kazzarahw/go-blueprint' . \
-     | xargs sed -i 's|github.com/kazzarahw/go-blueprint|github.com/you/yourproject|g'
-   ```
-   Files that reference the module path: `go.mod`, `README.md`, `DEVELOPMENT.md`,
-   `.golangci.yml` (goimports prefix), `Makefile` (goimports prefix),
-   `.vscode/settings.json` (gopls local prefix), and
-   `internal/taskstate/taskstate_test.go` (example import).
-4. **Verify nothing was missed**:
-   ```sh
-   grep -rn 'kazzarah' --exclude-dir=.git .
-   # Expected output: only lines inside this checklist in DEVELOPMENT.md
-   # itself (the grep/sed patterns above). Bare "go-blueprint" hits
-   # (template name in README, Makefile header, .golangci.yml) are intentional.
+   grep -rn 'kazzarahw' --exclude-dir=.git .
+   # Expected: only scripts/init/main.go (the template path is data there,
+   # by design). Bare "go-blueprint" hits (template name in README,
+   # Makefile header, .golangci.yml) are intentional.
    make verify
    ```
+4. **(Recommended) prove the initializer worked for your fork**:
+   ```sh
+   make smoke   # copies the tree, renames it, and runs make verify there
+   ```
+   CI runs this on every push, so your fork inherits it automatically.
 5. **Make it yours**:
    - Update the copyright holder in `LICENSE`.
    - Replace or delete `internal/taskstate`. If you delete it, do not
      re-add an example later — you have your own code now. If you keep it,
      it is a working example of the conventions; it is safe to leave in place.
-   - Trim or edit the seed ADRs (`docs/decisions/0001-*.md` … `0003-*.md`)
+   - Trim or edit the seed ADRs (`docs/decisions/0001-*.md` … `0004-*.md`)
      if they describe decisions your project does not share; keep the ADR format.
    - Update the README badge URL to your repository.
    - Replace this checklist section in your local copy with your own
@@ -255,6 +286,9 @@ one `Superseded by NNNN`, never delete it silently).
 1. `make verify` — the full gate (same command as local).
 2. `make fuzz FUZZTIME=30s` — fuzz smoke test on every fuzz target.
 3. `make vuln` — govulncheck against the live vulnerability database.
+4. `make smoke` — end-to-end: copy the template to a temp dir, rename the
+   module path with `scripts/init`, and run `make verify` in the result.
+   This is the template's own regression test for the initializer.
 
 Actions are pinned by commit SHA with the tag in a comment. `go` is read
 from `go.mod` via `actions/setup-go` with module caching on. The workflow

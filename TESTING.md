@@ -15,7 +15,7 @@ that is safe.
 3. **Table-driven by default.** The table is the spec. Enumerate the
    (input → expected) space explicitly.
 4. **Assert invariants and behavior, not trivia.** Never pin error message
-   strings; pin `errors.Is`/`errors.As` matches instead. Never assert on
+   strings; pin `errors.Is`/`errors.AsType` matches instead. Never assert on
    implementation details you expect to refactor.
 5. **The race detector is always on** (`make test` passes `-race -count=1`).
 6. **Fuzz what is adversarial**: parsers, decoders, state machines, anything
@@ -35,27 +35,53 @@ that is safe.
   | `make cover` | coverage report (no threshold gate; see below) |
   | `make fuzz FUZZTIME=30s` | fuzz every `Fuzz*` target for a fixed time |
   | `go test -run TestName ./internal/pkg/` | single test |
+  | `make smoke` | end-to-end: copy template → rename module → `make verify` there |
   | `go test -v ./...` | verbose |
 
 ## A worked example
 
 `internal/taskstate` is the reference. Its test file shows the house style:
 
-- **The transition table is data** (`allowed`), and
+- **Invariants by construction**: `Task` has no exported fields, so an
+  unknown `State` cannot be embedded in a value from outside the package.
+  The matrix test therefore covers the five known states; the zero value
+  (the only invalid constructible task) is rejected by every operation and
+  is tested explicitly.
+- **The transition table is data** (`allowedTransitions()`), and
   `TestTransitions_CompleteMatrix` checks *every* (operation × from-state)
-  pair against it, including an invalid `State` ("bogus") which must be
-  rejected with `errors.Is(err, ErrIllegalTransition)` and a zero value —
-  never a panic.
+  pair against it — the spec appears exactly once per test run.
+- **Fixtures are built per test**, not stored in package-level variables:
+  `allowedTransitions()`, `operations()` and `knownStates()` are
+  constructor functions; `taskInState` builds states via real transitions.
+  Package-level mutable state is forbidden even in tests — see
+  "Package-level state in tests" below.
 - **Immutability is asserted**: after a transition, the original value is
   unchanged and the derived value carries the change.
 - **Retry semantics are asserted behaviorally**, not by poking internals:
   start → fail → reset → start increments `Attempts` to 2.
-- **Errors are matchable**: `errors.As` extracts `*TransitionError` with
-  the expected `Op`/`From`; `errors.Is` reaches the sentinel.
+- **Errors are matchable**: `errors.AsType[*taskstate.TransitionError]`
+  extracts the structured details (the classic `errors.As` with a
+  pointer-to-pointer target is also shown); `errors.Is` reaches the
+  sentinel.
 - **`Example()`** doubles as executable documentation with deterministic
   output.
 
 Copy this pattern when building your own domain types.
+
+## Package-level state in tests
+
+The ban on package-level mutable state (AGENTS.md §1) applies to test files
+too — maps, slices and buffers stored as package-level `var` are mutable
+state, whatever the test file's excuse. Rules:
+
+1. Fixtures are built inside the test (or in `TestXxx`-scoped helpers
+   taking `t *testing.T`), never shared. See the constructor functions in
+   `internal/taskstate/taskstate_test.go`.
+2. Sentinel errors and other genuinely immutable values may live at package
+   level (they already do in non-test code). Anything whose fields or
+   contents a test could mutate must not.
+3. Table-driven cases are built per test function; mutation of one case
+   must never be able to leak into another test.
 
 ## Writing a table-driven test
 

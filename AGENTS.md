@@ -52,12 +52,13 @@ The companion documents are equally binding:
 
 ### Errors
 
-- Handle every error explicitly. `_ = f()` that discards an error is a bug,
-  even in tests. Blank-assigned errors (`v, _ := f()`) are allowed only when
-  documented as deliberate and expected.
-- Wrap with `%w` and match with `errors.Is` / `errors.As`. Sentinels are
+- Handle every error explicitly. `_ = f()` and `v, _ := f()` discard errors
+  silently and are forbidden — errcheck with `check-blank: true` enforces
+  this and fails the build.
+- Wrap with `%w` and match with `errors.Is` / `errors.AsType`. Sentinels are
   `var ErrX = errors.New("...")`; custom error types carry structured detail
-  and wrap a sentinel.
+  and wrap a sentinel. (`errors.As` with a pointer-to-pointer target is the
+  equivalent older idiom.)
 - Do not branch on error strings. Do not panic for expected failures; panics
   are for programmer errors and irrecoverable startup failures only.
 
@@ -99,6 +100,8 @@ The companion documents are equally binding:
   tests is not done.
 - Table-driven tests are the default. Make the table *be* the spec:
   enumerate cases as data, iterate, subtest with `t.Run`.
+- No package-level mutable state in tests either: build fixtures inside the
+  test (see the constructor functions in `internal/taskstate/taskstate_test.go`).
 - Deterministic always: no wall clock, no randomness without a seed, no
   sleeps, no network, no real filesystem unless `t.TempDir()`. Inject clocks
   and randomness via small interfaces or function fields.

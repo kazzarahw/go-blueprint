@@ -26,9 +26,6 @@ linters:
     - gocritic
     - gosec
     - govet
-    - ineffassign
-    - misspell
-    - nolintlint
     - perfsprint
     - revive
     - staticcheck
@@ -38,6 +35,9 @@ linters:
     - usestdlibvars
     - wastedassign
   settings:
+    # Blank assignments discard errors silently; AGENTS.md forbids it.
+    errcheck:
+      check-blank: true
     govet:
       enable:
         - shadow

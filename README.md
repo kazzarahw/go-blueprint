@@ -24,7 +24,8 @@ values, and deterministic tests including a fuzz target.
   `go tool`; no global installs, no version drift between local and CI.
 - **One verification gate** — `make verify` runs formatting checks, module
   tidiness, vet, static analysis, linting and race-detector tests. CI runs
-  the same gate, plus a fuzz smoke test and govulncheck.
+  the same gate, plus a fuzz smoke test, govulncheck, and an end-to-end
+  smoke test that initializes the template and re-verifies it.
 - **Agent contract** — [AGENTS.md](AGENTS.md): architecture rules
   (functional core / imperative shell), error handling, context and goroutine
   lifecycle, testing discipline, and a definition of done.
@@ -40,18 +41,16 @@ values, and deterministic tests including a fuzz target.
 git clone https://github.com/kazzarahw/go-blueprint.git myproject
 cd myproject
 
-# 2. Point the module at your project.
-go mod edit -module github.com/you/myproject
+# 2. Point the module at your project. The included initializer verifies
+#    go.mod, rewrites every file that references the template path, and
+#    works identically on Linux, macOS and Windows (no sed required).
+go run ./scripts/init github.com/you/myproject
 
-# 3. Rewrite the module path references in configs and docs.
-grep -rl --exclude-dir=.git 'github.com/kazzarahw/go-blueprint' . \
-  | xargs sed -i 's|github.com/kazzarahw/go-blueprint|github.com/you/myproject|g'
-
-# 4. Make it yours: keep or delete internal/taskstate, update LICENSE.
+# 3. Make it yours: keep or delete internal/taskstate, update LICENSE.
 #    See DEVELOPMENT.md#initializing-a-new-project-from-this-template for the
 #    full, checklist-style procedure.
 
-# 5. Verify.
+# 4. Verify.
 make verify
 ```
 
@@ -66,6 +65,7 @@ make verify
 | `make fmt` / `make fmt-check` | Apply / check gofmt + goimports |
 | `make lint` | golangci-lint only |
 | `make vuln` | govulncheck against the latest vulnerability DB |
+| `make smoke` | End-to-end: copy template → rename module → `make verify` there |
 | `make help` | List all targets |
 
 ## Layout
@@ -74,7 +74,9 @@ make verify
 .
 ├── cmd/                    # one directory per binary; empty by design (see cmd/README.md)
 ├── internal/               # all non-public code; never importable by other modules
-│   └── taskstate/          # reference example of the preferred conventions
+│   ├── taskstate/          # reference example of the preferred conventions
+│   └── treewalk/           # shared walker for the maintenance programs
+├── scripts/                # template maintenance: init (rename module), smoke (end-to-end check)
 ├── docs/
 │   ├── analysis.md         # static-analysis landscape; custom go/analysis rule guidance
 │   └── decisions/          # architecture decision records (ADRs)
