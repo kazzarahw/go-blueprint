@@ -31,3 +31,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Project-specific local artifacts
+/bin/
+/dist/
+.DS_Store
+.idea/

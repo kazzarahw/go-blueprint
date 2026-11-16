@@ -1,0 +1,81 @@
+# golangci-lint configuration for the go-blueprint template.
+#
+# Philosophy: strict, boring, explicit. No preset exclusion lists are used;
+# every linter here is expected to pass on a healthy codebase. If a linter
+# must be relaxed for a whole repository, change this file in its own commit
+# with a written rationale in the commit message — never silence findings
+# with inline //nolint without an explanation (nolintlint enforces that).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - copyloopvar
+    - containedctx
+    - contextcheck
+    - errcheck
+    - errorlint
+    - errname
+    - exhaustive
+    - fatcontext
+    - forcetypeassert
+    - gochecknoinits
+    - gocognit
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nolintlint
+    - perfsprint
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - wastedassign
+  settings:
+    govet:
+      enable:
+        - shadow
+    exhaustive:
+      # A switch over an enum must name every member. A "default" branch
+      # does not count as exhaustive.
+      default-signifies-exhaustive: false
+      check:
+        - switch
+    gocognit:
+      # Small functions, explicitly enforced. Lower this over time.
+      min-complexity: 15
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: unreachable-code
+        - name: superfluous-else
+        - name: defer
+    staticcheck:
+      checks:
+        - "all"
+  exclusions:
+    generated: lax
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/kazzarahw/go-blueprint

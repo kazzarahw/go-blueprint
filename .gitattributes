@@ -1,0 +1,2 @@
+# Normalize line endings across platforms; Go sources and configs are LF.
+* text=auto eol=lf
